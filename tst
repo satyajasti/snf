@@ -1,63 +1,109 @@
-import pandas as pd
+from turtle import pd
 
-def run_audit_column_validation(conn, database, schema, table, audit_df):
+
+def get_column_types(conn, database, schema, table):
+    query = f"""
+        SELECT COLUMN_NAME, DATA_TYPE
+        FROM {database}.INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}'
     """
-    Checks each audit column for NULLs in the given Snowflake table.
-    Returns a DataFrame with null counts and executed queries.
-    """
-    audit_columns = audit_df['Audit_Column'].dropna().str.strip().str.lower().tolist()
+    cur = conn.cursor()
+    cur.execute(query)
+    rows = cur.fetchall()
+    cur.close()
 
-    cursor = conn.cursor()
-    result_rows = []
+    categorical = [r[0] for r in rows if r[1].upper() in ('TEXT', 'VARCHAR', 'CHAR', 'STRING')]
+    numeric = [r[0] for r in rows if r[1].upper() in ('NUMBER', 'FLOAT', 'INT', 'DECIMAL', 'NUMERIC', 'DOUBLE')]
+    return categorical, numeric
 
-    try:
-        # Step 1: Get actual column names from Snowflake table
-        col_query = f"""
-            SELECT COLUMN_NAME 
-            FROM {database}.INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}'
-        """
-        cursor.execute(col_query)
-        actual_cols = [r[0] for r in cursor.fetchall()]
-        actual_cols_lower = {col.lower(): col for col in actual_cols}  # map lowercase to actual name
+def get_skew_data_with_query(conn, database, schema, table, columns, top_n=3, skew_threshold=0.8):
+    cur = conn.cursor()
+    summary = []
 
-        # Step 2: Filter valid audit columns
-        valid_audit_cols = [actual_cols_lower[col] for col in audit_columns if col in actual_cols_lower]
+    for col in columns:
+        query = f"""
+            SELECT "{col}", COUNT(*) as cnt
+            FROM "{database}"."{schema}"."{table}"
+            GROUP BY "{col}"
+            ORDER BY cnt DESC
+            LIMIT {top_n}
+        """.strip()
 
-        for col in valid_audit_cols:
-            query = f'SELECT COUNT(*) FROM "{database}"."{schema}"."{table}" WHERE "{col}" IS NULL'
-            cursor.execute(query)
-            null_count = cursor.fetchone()[0]
-            result_rows.append({
-                "Database": database,
-                "Schema": schema,
-                "Table": table,
-                "Audit_Column": col,
-                "Null_Count": null_count,
-                "Query": query.strip()
+        cur.execute(query)
+        rows = cur.fetchall()
+
+        total_query = f'SELECT COUNT(*) FROM "{database}"."{schema}"."{table}"'
+        cur.execute(total_query)
+        total_rows = cur.fetchone()[0]
+
+        if rows:
+            top_value = rows[0][0]
+            top_count = rows[0][1]
+            skew = "Yes" if total_rows > 0 and (top_count / total_rows) > skew_threshold else "No"
+        else:
+            top_value = None
+            top_count = 0
+            skew = "No"
+
+        summary.append({
+            "Column": col,
+            "Top_Value": top_value,
+            "Top_Count": top_count,
+            "Total_Rows": total_rows,
+            "Dominance %": round((top_count / total_rows) * 100, 2) if total_rows else 0,
+            "Skew_Detected": skew,
+            "Query_Used": query
+        })
+
+    cur.close()
+    return pd.DataFrame(summary)
+
+def get_outlier_data_with_query(conn, database, schema, table, columns):
+    summary = []
+
+    for col in columns:
+        query = f'SELECT "{col}" FROM "{database}"."{schema}"."{table}" WHERE "{col}" IS NOT NULL'
+        cur = conn.cursor()
+        cur.execute(query)
+        rows = cur.fetchall()
+        columns_desc = [desc[0] for desc in cur.description]
+        df = pd.DataFrame(rows, columns=columns_desc)
+        cur.close()
+
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = df[df[col].notnull()]
+
+        if df.empty:
+            summary.append({
+                "Column": col,
+                "Q1": None,
+                "Q3": None,
+                "IQR": None,
+                "Lower_Bound": None,
+                "Upper_Bound": None,
+                "Outlier_Count": 0,
+                "Sample_Outliers": "Non-numeric values only",
+                "Query_Used": query
             })
+            continue
 
-        if not result_rows:
-            result_rows.append({
-                "Database": database,
-                "Schema": schema,
-                "Table": table,
-                "Audit_Column": "None Found",
-                "Null_Count": "N/A",
-                "Query": "No valid audit columns matched"
-            })
+        Q1 = float(df[col].quantile(0.25))
+        Q3 = float(df[col].quantile(0.75))
+        IQR = Q3 - Q1
+        lower = Q1 - 1.5 * IQR
+        upper = Q3 + 1.5 * IQR
+        outliers = df[(df[col] < lower) | (df[col] > upper)][col].tolist()
 
-        return pd.DataFrame(result_rows)
+        summary.append({
+            "Column": col,
+            "Q1": Q1,
+            "Q3": Q3,
+            "IQR": IQR,
+            "Lower_Bound": lower,
+            "Upper_Bound": upper,
+            "Outlier_Count": len(outliers),
+            "Sample_Outliers": ", ".join(map(str, outliers[:3])) if outliers else "None",
+            "Query_Used": query
+        })
 
-    except Exception as e:
-        return pd.DataFrame([{
-            "Database": database,
-            "Schema": schema,
-            "Table": table,
-            "Audit_Column": "Error",
-            "Null_Count": "Error",
-            "Query": str(e)
-        }])
-
-    finally:
-        cursor.close()
+    return pd.DataFrame(summary)
