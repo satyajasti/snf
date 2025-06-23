@@ -107,3 +107,82 @@ def get_outlier_data_with_query(conn, database, schema, table, columns):
         })
 
     return pd.DataFrame(summary)
+
+
+def run_skew_and_outlier_validation(config_path, input_excel):
+    from openpyxl import Workbook, load_workbook
+    import os
+    import pandas as pd
+    from snowflake_connection import get_snowflake_connection
+
+    conn, database, schema, table, schema1, table1 = get_snowflake_connection(config_path)
+    table_df = pd.read_excel(input_excel, engine="openpyxl")
+
+    for _, row in table_df.iterrows():
+        database = str(row["Database"]).strip()
+        schema = str(row["Schema"]).strip()
+        table = str(row["Table"]).strip()
+
+        print(f"\n📊 Running validations for table: {database}.{schema}.{table}")
+
+        cat_cols, num_cols = get_column_types(conn, database, schema, table)
+        print(f"Categorical columns: {cat_cols}")
+        print(f"Numeric columns: {num_cols}")
+
+        skew_df = get_skew_data_with_query(conn, database, schema, table, cat_cols)
+        outlier_df = get_outlier_data_with_query(conn, database, schema, table, num_cols)
+
+        output_file = f"{table}_skew_outlier.xlsx"
+        if os.path.exists(output_file):
+            wb = load_workbook(output_file)
+        else:
+            wb = Workbook()
+            wb.remove(wb.active)
+
+        from openpyxl.utils.dataframe import dataframe_to_rows
+
+        def write_df_to_sheet(df, wb, sheet_name):
+            if sheet_name in wb.sheetnames:
+                del wb[sheet_name]
+            ws = wb.create_sheet(title=sheet_name)
+            for row in dataframe_to_rows(df, index=False, header=True):
+                if any(row):
+                    ws.append(row)
+
+        write_df_to_sheet(skew_df, wb, "skew_check")
+        write_df_to_sheet(outlier_df, wb, "outlier_check")
+        wb.save(output_file)
+        print(f"✅ Results saved: {output_file}")
+
+    conn.close()
+    print("🔒 Snowflake connection closed.")
+
+
+
+
+from validators.skew_outlier_validation import get_column_types, get_skew_data_with_query, get_outlier_data_with_query
+
+@then("run Skew and Outlier Validation")
+def step_run_skew_and_outlier_validation(context):
+    from openpyxl import load_workbook
+    from openpyxl import Workbook
+
+    for tbl in context.table_rows:
+        db, schema, table = tbl.get_parts()
+        context.tracker.start_table(tbl)
+        print(f"\n📊 Running skew and outlier validation for: {tbl}")
+        try:
+            cat_cols, num_cols = get_column_types(context.conn, db, schema, table)
+            skew_df = get_skew_data_with_query(context.conn, db, schema, table, cat_cols)
+            outlier_df = get_outlier_data_with_query(context.conn, db, schema, table, num_cols)
+
+            from common.excel_writer import write_df_to_excel
+            write_df_to_excel("output", table, "skew_check", skew_df)
+            write_df_to_excel("output", table, "outlier_check", outlier_df)
+
+            context.tracker.update_status(tbl, "Skew", "Success")
+        except Exception as e:
+            context.tracker.update_status(tbl, "Skew", "Failed", str(e))
+            print(f">> Skew/Outlier validation failed for {tbl}: {e}")
+
+
