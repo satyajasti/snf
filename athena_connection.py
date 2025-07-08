@@ -34,3 +34,28 @@ def get_athena_connection(config_file="config.json"):
 
     print(" Athena connection established.")
     return conn, athena["schema_name"]
+
+
+
+
+  "source_type": "athena",  // or "snowflake"
+
+    "snowflake": {
+        "user": "",
+        "account": "",
+        "authenticator": "externalbrowser",
+        "warehouse": "",
+        "database": "",
+        "role": "",
+        "schema": "",
+        "schema1": "DG_DX"
+    },
+
+    "aws_athena": {
+        "aws_access_key_id": "YOUR_ACCESS_KEY",
+        "aws_secret_access_key": "YOUR_SECRET_KEY",
+        "region_name": "us-east-1",
+        "s3_staging_dir": "s3://your-staging-bucket/athena/",
+        "schema_name": "your_athena_database",
+        "workgroup": "primary"
+    },
