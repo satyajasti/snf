@@ -1,36 +1,26 @@
-from pyathena import connect
-import json
-import os
+from snowflake_connection import get_athena_connection
 
-def get_athena_connection(config_file="config.json"):
-    """
-    Establishes a connection to AWS Athena using configuration from JSON file.
-    Returns the connection and schema name.
-    """
-    if not os.path.exists(config_file):
-        raise FileNotFoundError(f"Config file not found: {config_file}")
+def test_athena_connection():
+    try:
+        print("🔌 Testing Athena connection...")
 
-    with open(config_file) as f:
-        config = json.load(f)
+        conn, schema = get_athena_connection("config.json")
+        cursor = conn.cursor()
 
-    if "aws_athena" not in config:
-        raise KeyError("Missing 'aws_athena' section in config file")
+        # Replace this query with a real table if you want
+        test_query = f"SELECT 1 AS test_column"
+        cursor.execute(test_query)
+        result = cursor.fetchall()
 
-    athena = config["aws_athena"]
+        print(f"✅ Query ran successfully. Result: {result}")
 
-    required_keys = ["aws_access_key_id", "aws_secret_access_key", "region_name", "s3_staging_dir", "schema_name"]
-    for key in required_keys:
-        if key not in athena:
-            raise KeyError(f"Missing required key in aws_athena config: {key}")
+        if result:
+            print("🎉 Athena connection and query test passed.")
+        else:
+            print("⚠️ Query executed but returned no rows.")
 
-    conn = connect(
-        aws_access_key_id=athena["aws_access_key_id"],
-        aws_secret_access_key=athena["aws_secret_access_key"],
-        region_name=athena["region_name"],
-        s3_staging_dir=athena["s3_staging_dir"],
-        schema_name=athena["schema_name"],
-        work_group=athena.get("workgroup", "primary")
-    )
+    except Exception as e:
+        print(f"❌ Athena connection test failed: {e}")
 
-    print("✅ Athena connection established.")
-    return conn, athena["schema_name"]
+if __name__ == "__main__":
+    test_athena_connection()
