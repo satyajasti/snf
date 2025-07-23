@@ -43,29 +43,61 @@ FROM {table_ref};"""
     return queries
 
 def main():
-    input_file = "input.xlsx"  # Replace with your actual Excel file
-    df = pd.read_excel(input_file)
+    input_file = "input.xlsx"  # Your input file
+    output_file = "sql_output.xlsx"
+
+    try:
+        df = pd.read_excel(input_file)
+        print(f"✅ Read {len(df)} rows from '{input_file}'")
+    except Exception as e:
+        print(f"❌ Failed to read Excel file: {e}")
+        return
+
+    expected_cols = ['Database', 'Schema', 'Table', 'Clmns']
+    if not all(col in df.columns for col in expected_cols):
+        print(f"❌ Missing one or more required columns: {expected_cols}")
+        print(f"🧾 Found columns: {list(df.columns)}")
+        return
 
     all_queries = []
 
-    # Group by Database, Schema, Table to gather all columns per table
+    # Group by Database, Schema, Table
     grouped = df.groupby(["Database", "Schema", "Table"])
 
     for (database, schema, table), group_df in grouped:
         table_ref = build_table_ref(database, schema, table)
-        columns = group_df["Clmns"].dropna().unique().tolist()
+        columns = group_df["Clmns"].dropna().astype(str).unique().tolist()
 
-        # Generate: Null, Distinct (grouped)
-        all_queries.append(generate_null_query(table_ref, columns))
-        all_queries.append(generate_distinct_query(table_ref, columns))
+        if not columns:
+            print(f"⚠️ No columns found for table {table_ref}, skipping.")
+            continue
 
-        # Generate: One-per-column validations
-        all_queries.extend(generate_per_column_queries(table_ref, columns))
+        print(f"\n📌 Generating queries for table: {table_ref}")
+        print(f"🔹 Columns: {columns}")
 
-    # Write to Excel
-    output_df = pd.DataFrame(all_queries)
-    output_df.to_excel("sql_output.xlsx", sheet_name="generated_sql", index=False)
-    print("✅ SQL queries written to 'sql_output.xlsx' in sheet 'generated_sql'")
+        # Generate grouped validations
+        null_query = generate_null_query(table_ref, columns)
+        distinct_query = generate_distinct_query(table_ref, columns)
+
+        all_queries.append(null_query)
+        all_queries.append(distinct_query)
+
+        # Print to console
+        print(f"\n🔍 Null Query:\n{null_query['Query']}")
+        print(f"\n🔍 Distinct Query:\n{distinct_query['Query']}")
+
+        # Generate per-column queries
+        per_col = generate_per_column_queries(table_ref, columns)
+        for q in per_col:
+            print(f"\n🔎 {q['Validator']} Query for column:\n{q['Query']}")
+        all_queries.extend(per_col)
+
+    if all_queries:
+        output_df = pd.DataFrame(all_queries)
+        output_df.to_excel(output_file, sheet_name="generated_sql", index=False)
+        print(f"\n✅ SQL queries written to '{output_file}' in sheet 'generated_sql'")
+    else:
+        print("⚠️ No queries generated. Check your input.")
 
 if __name__ == "__main__":
     main()
