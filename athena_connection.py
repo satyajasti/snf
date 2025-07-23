@@ -1,80 +1,71 @@
 import pandas as pd
 
-# 🧠 This function generates all the required validation queries for a given column
-def generate_queries(schema, table, column):
-    fq_table = f"{schema}.{table}"  # Fully qualified table: schema.table
+def build_table_ref(database, schema, table):
+    if pd.isna(database) or database == "":
+        return f"{schema}.{table}"
+    return f"{database}.{schema}.{table}"
+
+def generate_null_query(table_ref, columns):
+    lines = ["COUNT(*) AS total_rows"]
+    for col in columns:
+        lines.append(f"COUNT({col}) AS {col}_not_null")
+        lines.append(f"COUNT(*) - COUNT({col}) AS {col}_null")
+    query = f"SELECT \n  " + ",\n  ".join(lines) + f"\nFROM {table_ref};"
+    return {"Validator": "Null", "Query": query}
+
+def generate_distinct_query(table_ref, columns):
+    lines = [f"COUNT(DISTINCT {col}) AS {col}_distinct" for col in columns]
+    query = f"SELECT \n  " + ",\n  ".join(lines) + f"\nFROM {table_ref};"
+    return {"Validator": "Distinct", "Query": query}
+
+def generate_per_column_queries(table_ref, columns):
     queries = []
-
-    # 1️⃣ SELECT Query
-    queries.append({
-        "Validator": "Select",
-        "Query": f"SELECT {column} FROM {fq_table};"
-    })
-
-    # 2️⃣ NULL Check Query
-    queries.append({
-        "Validator": "Null",
-        "Query": f"""SELECT 
-    COUNT(*) AS total_rows,
-    COUNT({column}) AS non_null_count,
-    COUNT(*) - COUNT({column}) AS null_count
-FROM {fq_table};"""
-    })
-
-    # 3️⃣ DISTINCT Count Query
-    queries.append({
-        "Validator": "Distinct",
-        "Query": f"SELECT COUNT(DISTINCT {column}) AS distinct_count FROM {fq_table};"
-    })
-
-    # 4️⃣ LENGTH Check Query
-    queries.append({
-        "Validator": "Length",
-        "Query": f"""SELECT 
-    MAX(LENGTH({column})) AS max_len, 
-    MIN(LENGTH({column})) AS min_len 
-FROM {fq_table};"""
-    })
-
-    # 5️⃣ IS NUMERIC Check Query (checks if column contains only digits)
-    queries.append({
-        "Validator": "IsNumeric",
-        "Query": f"SELECT {column} FROM {fq_table} WHERE {column} ~ '^[0-9]+$';"
-    })
-
-    # 6️⃣ BLANK SPACES Check Query (detects values that are just empty strings or spaces)
-    queries.append({
-        "Validator": "BlankSpaces",
-        "Query": f"SELECT {column} FROM {fq_table} WHERE TRIM({column}) = '';"
-    })
-
+    for col in columns:
+        queries.append({
+            "Validator": "Select",
+            "Query": f"SELECT {col} FROM {table_ref};"
+        })
+        queries.append({
+            "Validator": "Length",
+            "Query": f"""SELECT 
+  MAX(LENGTH({col})) AS max_len, 
+  MIN(LENGTH({col})) AS min_len 
+FROM {table_ref};"""
+        })
+        queries.append({
+            "Validator": "IsNumeric",
+            "Query": f"SELECT {col} FROM {table_ref} WHERE {col} ~ '^[0-9]+$';"
+        })
+        queries.append({
+            "Validator": "BlankSpaces",
+            "Query": f"SELECT {col} FROM {table_ref} WHERE TRIM({col}) = '';"
+        })
     return queries
 
-# 🧪 Main driver function to read Excel and generate SQLs
 def main():
-    input_file = "input.xlsx"  # Update this with your actual input Excel file
+    input_file = "input.xlsx"  # Replace with your actual Excel file
     df = pd.read_excel(input_file)
+
     all_queries = []
 
-    # Loop through each row in the input
-    for _, row in df.iterrows():
-        schema = row["Schema"]
-        table = row["Database"]
-        # Multiple columns may be comma-separated — clean and split them
-        column_list = [col.strip() for col in str(row["Clmns"]).split(",")]
+    # Group by Database, Schema, Table to gather all columns per table
+    grouped = df.groupby(["Database", "Schema", "Table"])
 
-        # For each column, generate all queries
-        for col in column_list:
-            query_set = generate_queries(schema, table, col)
-            all_queries.extend(query_set)
+    for (database, schema, table), group_df in grouped:
+        table_ref = build_table_ref(database, schema, table)
+        columns = group_df["Clmns"].dropna().unique().tolist()
 
-    # Convert list of queries into a DataFrame
-    output_df = pd.DataFrame(all_queries)
+        # Generate: Null, Distinct (grouped)
+        all_queries.append(generate_null_query(table_ref, columns))
+        all_queries.append(generate_distinct_query(table_ref, columns))
+
+        # Generate: One-per-column validations
+        all_queries.extend(generate_per_column_queries(table_ref, columns))
 
     # Write to Excel
+    output_df = pd.DataFrame(all_queries)
     output_df.to_excel("sql_output.xlsx", sheet_name="generated_sql", index=False)
-    print("✅ SQL queries written to sql_output.xlsx")
+    print("✅ SQL queries written to 'sql_output.xlsx' in sheet 'generated_sql'")
 
-# 📌 Execute main
 if __name__ == "__main__":
     main()
