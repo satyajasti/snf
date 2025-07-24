@@ -53,54 +53,62 @@ def generate_outliers_query(table_ref, columns):
     return ("Outliers", f"SELECT \n  " + ",\n  ".join(parts) + f"\nFROM {table_ref};")
 
 def generate_leading_trailing_query(table_ref, columns):
-    parts = [f"COUNT(*) FILTER (WHERE {c} != TRIM(CAST({c} AS VARCHAR))) AS {c}_trim_mismatch" for c in columns]
+    parts = [
+        f"COUNT(*) FILTER (WHERE CAST({c} AS VARCHAR) != TRIM(CAST({c} AS VARCHAR))) AS {c}_trim_mismatch"
+        for c in columns
+    ]
     return ("LeadingTrailing", f"SELECT \n  " + ",\n  ".join(parts) + f"\nFROM {table_ref};")
 
 def generate_invalid_date_query(table_ref, columns):
     parts = [f"COUNT(*) FILTER (WHERE {c} > current_date OR {c} < DATE '1900-01-01') AS {c}_invalid_date" for c in columns]
     return ("InvalidDateValues", f"SELECT \n  " + ",\n  ".join(parts) + f"\nFROM {table_ref};")
 
-def generate_reference_check(table_ref, column, ref_values):
-    values = ", ".join([f"'{val}'" for val in ref_values])
-    return {
-        "Validator": f"RefCheck_{column}",
-        "Query": f"SELECT COUNT(*) AS {column}_not_in_ref FROM {table_ref} WHERE {column} NOT IN ({values});"
-    }
-
 def generate_duplicate_check(table_ref, columns):
     col_list = ", ".join(columns)
     return ("Duplicates", f"SELECT {col_list}, COUNT(*) AS duplicate_count FROM {table_ref} GROUP BY {col_list} HAVING COUNT(*) > 1;")
+
+def filter_columns_by_type(columns_df, valid_types):
+    return columns_df[columns_df["Data_Type"].str.lower().str.startswith(tuple(valid_types))]["Clmns"].tolist()
 
 def run_validation(input_file='input.xlsx', output_file='sql_output.xlsx'):
     df = pd.read_excel(input_file)
     df["Database"] = df["Database"].fillna("")
     df.columns = [col.strip() for col in df.columns]
 
-    grouped = df.groupby(["Database", "Schema", "Table"])
     all_queries = []
+    grouped = df.groupby(["Database", "Schema", "Table"])
 
     for (database, schema, table), group_df in grouped:
         table_ref = build_table_ref(database, schema, table)
-        columns = group_df["Clmns"].dropna().astype(str).str.strip().unique().tolist()
+        all_columns = group_df["Clmns"].tolist()
 
-        all_queries.append(generate_null_query(table_ref, columns))
-        all_queries.append(generate_distinct_query(table_ref, columns))
-        all_queries.append(generate_length_query(table_ref, columns))
-        all_queries.append(generate_blankspaces_query(table_ref, columns))
-        all_queries.append(generate_isnumeric_query(table_ref, columns))
-        all_queries.append(generate_specialchar_query(table_ref, columns))
-        email_q = generate_email_query(table_ref, columns)
-        if email_q: all_queries.append(email_q)
-        all_queries.append(generate_phone_query(table_ref, columns))
-        all_queries.append(generate_dateformat_query(table_ref, columns))
-        all_queries.append(generate_constant_query(table_ref, columns))
-        all_queries.append(generate_outliers_query(table_ref, columns))
-        all_queries.append(generate_leading_trailing_query(table_ref, columns))
-        all_queries.append(generate_invalid_date_query(table_ref, columns))
-        all_queries.append(generate_duplicate_check(table_ref, columns))
-        if "state_cd" in columns:
-            ref_states = ['CA', 'TX', 'NY', 'FL', 'IL']
-            all_queries.append(generate_reference_check(table_ref, "state_cd", ref_states))
+        all_queries.append(generate_null_query(table_ref, all_columns))
+        all_queries.append(generate_distinct_query(table_ref, all_columns))
+        all_queries.append(generate_constant_query(table_ref, all_columns))
+        all_queries.append(generate_duplicate_check(table_ref, all_columns))
+
+        varchar_cols = filter_columns_by_type(group_df, ["varchar", "string"])
+        numeric_cols = filter_columns_by_type(group_df, ["decimal", "int", "bigint", "double", "float"])
+        date_cols = filter_columns_by_type(group_df, ["date", "timestamp"])
+
+        if varchar_cols:
+            all_queries.append(generate_length_query(table_ref, varchar_cols))
+            all_queries.append(generate_blankspaces_query(table_ref, varchar_cols))
+            all_queries.append(generate_isnumeric_query(table_ref, varchar_cols))
+            all_queries.append(generate_specialchar_query(table_ref, varchar_cols))
+            all_queries.append(generate_phone_query(table_ref, varchar_cols))
+            all_queries.append(generate_dateformat_query(table_ref, varchar_cols))
+            all_queries.append(generate_leading_trailing_query(table_ref, varchar_cols))
+
+        if any("email" in col.lower() for col in varchar_cols):
+            email_q = generate_email_query(table_ref, varchar_cols)
+            if email_q: all_queries.append(email_q)
+
+        if numeric_cols:
+            all_queries.append(generate_outliers_query(table_ref, numeric_cols))
+
+        if date_cols:
+            all_queries.append(generate_invalid_date_query(table_ref, date_cols))
 
     pd.DataFrame(all_queries, columns=["Validator", "Query"]).to_excel(output_file, index=False)
     print(f" Queries saved to {output_file}")
