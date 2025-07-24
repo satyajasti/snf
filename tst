@@ -4,35 +4,36 @@ import pandas as pd
 def build_table_ref(database, schema, table):
     return f"{database}.{schema}.{table}" if database else f"{schema}.{table}"
 
-def generate_null_query(table_ref, columns):
-    parts = ["COUNT(*) AS total_rows"]
-    parts += [
-        f"COUNT({c}) AS {c}_not_null",
-        f"COUNT(*) - COUNT({c}) AS {c}_null",
-        f"ROUND(100.0 * COUNT({c}) / COUNT(*), 2) AS {c}_not_null_pct",
-        f"ROUND(100.0 * (COUNT(*) - COUNT({c})) / COUNT(*), 2) AS {c}_null_pct"
-        for c in columns
-    ]
-    return ("Null", "SELECT \n  " + ",\n  ".join(parts) + f"\nFROM {table_ref};")
-
-def generate_distinct_preview_query(table_ref, columns):
+def generate_null_query_per_column(table_ref, columns):
     queries = []
     for c in columns:
-        queries.append({
-            "Validator": f"DistinctPreview_{c}",
-            "Query": f"SELECT DISTINCT {c} FROM {table_ref} LIMIT 3;"
-        })
+        query = f"""SELECT 
+  '{c}' AS Clmns,
+  COUNT(*) AS Total_rows,
+  COUNT({c}) AS Not_null,
+  ROUND(100.0 * COUNT({c}) / COUNT(*), 2) AS Not_null_percentage,
+  COUNT(*) - COUNT({c}) AS Null,
+  ROUND(100.0 * (COUNT(*) - COUNT({c})) / COUNT(*), 2) AS Null_percentage
+FROM {table_ref}"""
+        queries.append({"Validator": "NullStats", "Query": query})
     return queries
 
-def generate_phone_query(table_ref, columns):
-    parts = [f"COUNT(*) FILTER (WHERE {c} ~ '^\\d{{3}}-\\d{{3}}-\\d{{4}}$') AS {c}_valid_phone" for c in columns]
-    return ("PhoneFormat", "SELECT \n  " + ",\n  ".join(parts) + f"\nFROM {table_ref};")
+def generate_combined_distinct_query(table_ref, columns):
+    col_list = ", ".join(columns)
+    query = f"SELECT DISTINCT {col_list} FROM {table_ref} LIMIT 3;"
+    return {"Validator": "DistinctPreview", "Query": query}
 
 def generate_dateformat_query(table_ref, columns):
-    parts = [f"COUNT(*) FILTER (WHERE {c} ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$') AS {c}_valid_date" for c in columns]
-    return ("DateFormat", "SELECT \n  " + ",\n  ".join(parts) + f"\nFROM {table_ref};")
+    parts = [
+        f"COUNT(*) FILTER (WHERE {c} ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$') AS {c}_valid_date"
+        for c in columns
+        if 'date' in c.lower()
+    ]
+    if parts:
+        return ("DateFormat", "SELECT \n  " + ",\n  ".join(parts) + f"\nFROM {table_ref};")
+    return None
 
-def run_validation(input_file='input.xlsx', output_file='sql_output_v2.xlsx'):
+def run_validation(input_file='input.xlsx', output_file='sql_output_v3.xlsx'):
     df = pd.read_excel(input_file)
     df["Database"] = df["Database"].fillna("")
     df.columns = [col.strip() for col in df.columns]
@@ -46,29 +47,16 @@ def run_validation(input_file='input.xlsx', output_file='sql_output_v2.xlsx'):
         table_ref = build_table_ref(database, schema, table)
         all_columns = group_df["Clmns"].tolist()
 
-        all_queries.append(generate_null_query(table_ref, all_columns))
+        all_queries += generate_null_query_per_column(table_ref, all_columns)
+        all_queries.append(generate_combined_distinct_query(table_ref, all_columns))
 
         varchar_cols = group_df[group_df["Data_Type"].str.lower().str.startswith("varchar")]["Clmns"].tolist()
-        dateformat_cols = group_df[group_df["Data_Type"].str.lower().str.startswith("varchar") | group_df["Data_Type"].str.lower().str.startswith("string")]["Clmns"].tolist()
+        dateformat_q = generate_dateformat_query(table_ref, varchar_cols)
+        if dateformat_q:
+            all_queries.append({"Validator": dateformat_q[0], "Query": dateformat_q[1]})
 
-        if varchar_cols:
-            all_queries.append(generate_phone_query(table_ref, varchar_cols))
-        if dateformat_cols:
-            all_queries.append(generate_dateformat_query(table_ref, dateformat_cols))
-
-        # Add Distinct Preview (LIMIT 3) queries
-        all_queries += generate_distinct_preview_query(table_ref, all_columns)
-
-    # Flatten and format for DataFrame
-    output_rows = []
-    for entry in all_queries:
-        if isinstance(entry, tuple):
-            output_rows.append({"Validator": entry[0], "Query": entry[1]})
-        elif isinstance(entry, dict):
-            output_rows.append(entry)
-
-    pd.DataFrame(output_rows).to_excel(output_file, index=False)
-    print(f"✅ Enhanced queries saved to {output_file}")
+    pd.DataFrame(all_queries).to_excel(output_file, index=False)
+    print(f" Enhanced queries saved to {output_file}")
 
 if __name__ == '__main__':
     run_validation()
