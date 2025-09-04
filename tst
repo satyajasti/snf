@@ -1,9 +1,7 @@
--- 1) Where to search + what to look for
-SET target_db      = '';     -- or ''
-SET schema_like    = '%';          -- narrow like '%' if you want
-SET search_values  = ARRAY_CONSTRUCT('');
+-- 1. Choose the database you want to scan
+SET target_db = '';   -- or ''
 
--- 2) Results table
+-- 2. Create a results table
 CREATE OR REPLACE TEMP TABLE search_hits (
   database_name STRING,
   schema_name   STRING,
@@ -13,38 +11,32 @@ CREATE OR REPLACE TEMP TABLE search_hits (
   hit_count     NUMBER
 );
 
--- 3) Scan every VARCHAR column and insert matches
-DECLARE v_db STRING DEFAULT $target_db;
-DECLARE v_schema_like STRING DEFAULT $schema_like;
-DECLARE vals ARRAY DEFAULT $search_values;
-
-FOR col IN (
-  SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
-  FROM IDENTIFIER(v_db || '.INFORMATION_SCHEMA.COLUMNS')
-  WHERE TABLE_SCHEMA ILIKE v_schema_like
-    AND DATA_TYPE ILIKE 'VARCHAR%'          -- adjust if you also want VARIANT/ARRAY
-) DO
-  FOR i IN 0..ARRAY_SIZE(vals)-1 DO
-    LET val STRING := vals[i]::STRING;
-
-    LET q STRING :=
-      'INSERT INTO search_hits
-       SELECT ' ||
-         QUOTE_LITERAL(v_db) || ',' ||
-         QUOTE_LITERAL(col.TABLE_SCHEMA) || ',' ||
-         QUOTE_LITERAL(col.TABLE_NAME) || ',' ||
-         QUOTE_LITERAL(col.COLUMN_NAME) || ',' ||
-         QUOTE_LITERAL(val) || ',
-         COUNT(*)
-       FROM ' || v_db || '.' || col.TABLE_SCHEMA || '.' || col.TABLE_NAME || '
-       WHERE ' || col.COLUMN_NAME || ' ILIKE ''%' || val || '%''';
-
-    EXECUTE IMMEDIATE :q;
-  END FOR;
-END FOR;
-
--- 4) See where we found them (only positives)
-SELECT *
-FROM search_hits
-WHERE hit_count > 0
-ORDER BY hit_count DESC, schema_name, table_name, column_name, matched_value;
+-- 3. Generate dynamic SQL for each column
+SELECT
+  'INSERT INTO search_hits
+   SELECT ' || QUOTE_LITERAL($target_db) || ',
+          ' || QUOTE_LITERAL(c.TABLE_SCHEMA) || ',
+          ' || QUOTE_LITERAL(c.TABLE_NAME) || ',
+          ' || QUOTE_LITERAL(c.COLUMN_NAME) || ',
+          ''HL7'', COUNT(*)
+   FROM ' || $target_db || '.' || c.TABLE_SCHEMA || '.' || c.TABLE_NAME || '
+   WHERE ' || c.COLUMN_NAME || ' ILIKE ''%%''
+   UNION ALL
+   SELECT ' || QUOTE_LITERAL($target_db) || ',
+          ' || QUOTE_LITERAL(c.TABLE_SCHEMA) || ',
+          ' || QUOTE_LITERAL(c.TABLE_NAME) || ',
+          ' || QUOTE_LITERAL(c.COLUMN_NAME) || ',
+          ''Direct'', COUNT(*)
+   FROM ' || $target_db || '.' || c.TABLE_SCHEMA || '.' || c.TABLE_NAME || '
+   WHERE ' || c.COLUMN_NAME || ' ILIKE ''%%''
+   UNION ALL
+   SELECT ' || QUOTE_LITERAL($target_db) || ',
+          ' || QUOTE_LITERAL(c.TABLE_SCHEMA) || ',
+          ' || QUOTE_LITERAL(c.TABLE_NAME) || ',
+          ' || QUOTE_LITERAL(c.COLUMN_NAME) || ',
+          ''IMM'', COUNT(*)
+   FROM ' || $target_db || '.' || c.TABLE_SCHEMA || '.' || c.TABLE_NAME || '
+   WHERE ' || c.COLUMN_NAME || ' ILIKE ''%%'';'
+   AS sql_stmt
+FROM IDENTIFIER($target_db || '.INFORMATION_SCHEMA.COLUMNS') c
+WHERE DATA_TYPE ILIKE 'VARCHAR%';
