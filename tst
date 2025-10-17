@@ -1,138 +1,189 @@
-CREATE SCHEMA IF NOT EXISTS HOSCDA_RPT;
+Snowflake Data Validation & Automation Framework
+1. Overview
 
-CREATE TABLE IF NOT EXISTS HOSCDA_RPT.FACT_INGEST_VOLUME (
-  -- Time grain (windowed)
-  window_start_ts   TIMESTAMP_NTZ          COMMENT='Start of the reporting window (24h or sub-daily)',
-  window_end_ts     TIMESTAMP_NTZ          COMMENT='End of the reporting window',
-  load_dt           DATE                   COMMENT='Partition date for filters/rollups (usually window_start date)',
+The Snowflake Automation Testing Framework is a reusable, Python-based solution designed to automate data validation and schema verification for Snowflake databases. 
+It eliminates manual effort by automating end-to-end checks — from reading configurations and running SQL validations to producing Excel-based reports with results.
 
-  -- Slicing dimensions
-  stage_nm          STRING                 COMMENT='Pipeline stage: HOSCDA_SIG/HOSCDA/HOSCDA_EXTRACT/…',
-  src_nm            STRING                 COMMENT='Source code (e.g., RA code)',
-  src_display_nm    STRING                 COMMENT='Source display name (e.g., RA Name)',
-  doc_type_cd       STRING                 COMMENT='Document type: CCDA/ADT/CCR/PDF/…',
-  doc_subtype_cd    STRING                 COMMENT='Document subtype: e.g., ADT message A01/A02/A03; blank when N/A',
-  prcs_nm           STRING                 COMMENT='Process family: MRR/YRDC/Risk Accuracy/ADT/ChartHub/CCR',
-  env_nm            STRING                 COMMENT='Environment identifier: DEV/QA/PROD',
-  lob_cd            STRING                 COMMENT='(Optional) Line of Business: MA/COMM/…',
-  load_type         STRING                 COMMENT='(Optional) FULL / INCR',
+2. Primary Objective
 
-  -- Measures (volumes & quality)
-  file_cnt          NUMBER(38,0)           COMMENT='Files in window',
-  record_cnt        NUMBER(38,0)           COMMENT='Records/messages in window',
-  member_cnt        NUMBER(38,0)           COMMENT='Distinct members/patients in window',
-  encounter_cnt     NUMBER(38,0)           COMMENT='Distinct encounters in window',
-  byte_cnt          NUMBER(38,0)           COMMENT='Total bytes processed (approx is fine)',
-  success_cnt       NUMBER(38,0)           COMMENT='Successful records',
-  error_cnt         NUMBER(38,0)           COMMENT='Errored records',
-  retry_cnt         NUMBER(38,0)           COMMENT='Retried records',
+To ensure data integrity, consistency, and schema alignment between Snowflake environments (e.g., between staging and target tables) through automation — minimizing human error and maximizing repeatability.
 
-  -- Timeliness & latency
-  first_event_ts    TIMESTAMP_NTZ          COMMENT='Earliest event_ts observed in window',
-  last_event_ts     TIMESTAMP_NTZ          COMMENT='Latest event_ts observed in window',
-  avg_latency_sec   NUMBER(18,3)           COMMENT='Avg(event_ts -> landed_ts) seconds',
-  p95_latency_sec   NUMBER(18,3)           COMMENT='P95(event_ts -> landed_ts) seconds',
+3. Key Use Case
+Area	Problem	Framework Solution
+Schema validation	Manual comparison of columns, datatypes, and keys	Automated DDL (schema) comparison between Snowflake tables
+Data duplication	Hard to identify duplicate rows across large data sets	Automated duplicate record validation
+Null value checks	Tedious to verify null completeness column-by-column	Null validation automation per column
+Data patterns	Regex validations needed for fields like email, date, or IDs	Regex-driven pattern validation (defined in Excel)
+Auditability	No single location for all validation results	Centralized Excel-based output reporting
+Time efficiency	Manual SQL runs for each validation	Automated SQL execution via Python + SQLAlchemy
 
-  -- Lineage / Ops
-  edl_run_id        STRING                 COMMENT='Batch/run identifier when applicable',
-  batch_id          STRING                 COMMENT='Optional batch grouping',
-  created_ts        TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP COMMENT='Insert audit time',
+4. Why This Framework is Needed
 
-  -- Rollup helpers
-  load_yyyy         NUMBER(4,0)            COMMENT='Year of load_dt',
-  load_mm           NUMBER(2,0)            COMMENT='Month of load_dt',
-  load_yyyy_mm      STRING                 COMMENT='Year-month (YYYY-MM) for fast BI rollups',
-
-  CONSTRAINT PK_FACT_INGEST_VOLUME
-    PRIMARY KEY (window_start_ts, stage_nm, src_nm, doc_type_cd, COALESCE(doc_subtype_cd,'~'))
-)
--- Choose a cluster key that matches common filters (date + major slicers)
-CLUSTER BY (load_dt, stage_nm, src_nm, doc_type_cd);
+The framework provides a structured, automated approach to data validation by eliminating manual SQL efforts, reducing human errors, and improving the overall consistency of results. 
+Its modular design allows easy maintenance, scalability, and integration into CI/CD workflows.
 
 
-
-CREATE TABLE IF NOT EXISTS HOSCDA_RPT.EVENT_INGEST_LOG (
-  event_ts        TIMESTAMP_NTZ    COMMENT='Source/system event time',
-  landed_ts       TIMESTAMP_NTZ    COMMENT='When the event/file landed in platform',
-  stage_nm        STRING           COMMENT='Pipeline stage',
-  src_nm          STRING           COMMENT='Source code',
-  doc_type_cd     STRING           COMMENT='Document type',
-  doc_subtype_cd  STRING           COMMENT='Document subtype',
-  prcs_nm         STRING           COMMENT='Process family',
-  env_nm          STRING           COMMENT='Environment',
-  lob_cd          STRING           COMMENT='(Optional) Line of business',
-
-  file_id         STRING           COMMENT='File identifier',
-  file_nm         STRING           COMMENT='(Optional) File name',
-  record_id       STRING           COMMENT='Record/message id (if available)',
-  member_id       STRING           COMMENT='Member/patient id (if available)',
-  encounter_id    STRING           COMMENT='Encounter id (if available)',
-
-  status_cd       STRING           COMMENT='SUCCESS/ERROR/RETRY',
-  error_code      STRING           COMMENT='Optional error code',
-  error_msg       STRING           COMMENT='Optional error text',
-  byte_len        NUMBER(38,0)     COMMENT='Record size (approx ok)',
-  edl_run_id      STRING           COMMENT='Batch/run identifier',
-  batch_id        STRING           COMMENT='Optional batch group',
-
-  created_ts      TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-)
-CLUSTER BY (stage_nm, src_nm, doc_type_cd, TO_DATE(event_ts));
+| **Challenge**               | **Impact**                          | **Framework Advantage**                  |
+| --------------------------- | ----------------------------------- | ---------------------------------------- |
+| Manual validation process   | Time-consuming and inconsistent     | Automated & repeatable execution         |
+| Schema drift undetected     | Potential data loss or mismatch     | Automated schema DDL comparison          |
+| Lack of audit trail         | No evidence of what was tested      | Excel-based summary & result tracking    |
+| Repeated effort per project | Code duplication & human dependency | Config-driven & reusable across projects |
+| Expensive external tools    | High license & maintenance costs    | 100% open-source and customizable        |
 
 
-CREATE TABLE IF NOT EXISTS HOSCDA_RPT.DIM_SOURCE (
-  src_nm          STRING PRIMARY KEY,
-  src_display_nm  STRING,
-  ra_code         STRING,
-  ra_name         STRING,
-  lob_cd          STRING,
-  owner_team      STRING,
-  is_active       BOOLEAN,
-  created_ts      TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-);
+5. Framework Architecture
 
-CREATE TABLE IF NOT EXISTS HOSCDA_RPT.DIM_DOCTYPE (
-  doc_type_cd     STRING,
-  doc_subtype_cd  STRING,
-  description     STRING,
-  is_active       BOOLEAN,
-  PRIMARY KEY (doc_type_cd, COALESCE(doc_subtype_cd,'~'))
-);
+The framework follows a modular design with clear separation between configuration, connection, validation logic, and reporting. 
+All validations are defined in Excel inputs, executed via BDD tests, and written back to Excel outputs.
 
-CREATE TABLE IF NOT EXISTS HOSCDA_RPT.DIM_STAGE (
-  stage_nm        STRING PRIMARY KEY,
-  description     STRING
-);
-
-
-
-CREATE OR REPLACE VIEW HOSCDA_RPT.VW_FACT_INGEST_VOLUME AS
-SELECT
-  *,
-  CASE WHEN record_cnt > 0 THEN ROUND(error_cnt  * 100.0 / record_cnt, 3) ELSE 0 END AS error_rate_pct,
-  CASE WHEN record_cnt > 0 THEN ROUND(success_cnt* 100.0 / record_cnt, 3) ELSE 0 END AS success_rate_pct
-FROM HOSCDA_RPT.FACT_INGEST_VOLUME;
+project_root/
+│
+├── common/
+│   ├── config_loader.py         → Reads Snowflake config (JSON)
+│   ├── snowflake_connection.py  → Establishes Snowflake connection
+│   ├── table_loader.py          → Reads Excel input
+│   ├── excel_writer.py          → Writes results to Excel
+│   └── validation_tracker.py    → Tracks run summaries
+│
+├── validators/
+│   ├── ddl_lib.py               → Schema-level (DDL) comparison
+│   ├── dup_val_exc_audit.py     → Duplicate record validation
+│   ├── pattern_validation.py    → Regex pattern checks
+│   └── null_validation.py       → Null/Not Null checks
+│
+├── features/
+│   ├── ddl_compare.feature      → BDD feature file
+│   └── steps/
+│       └── ddl_steps.py         → Behave step definitions
+│
+├── config/
+│   └── config.json              → Snowflake credentials & default parameters
+│
+└── output/
+    └── *.xlsx                   → Generated validation reports
 
 
+6. End-to-End Workflow
+
+1. Enter table details in Excel (input file)
+2. Run BDD test case (Behave command)
+3. Framework reads Snowflake connection and executes validations
+4. Output is generated as Excel reports in the 'output' folder
+
+| **Step** | **Action**                                                   | **Component**                            | **Outcome**                                                        |
+| -------- | ------------------------------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------ |
+| 1        | Enter the list of tables to validate in the Excel input file | `input_tables.xlsx`                      | Each row defines a database, schema, and table name                |
+| 2        | Run the BDD test (e.g., duplicate validation)                | `behave -k features/ddl_compare.feature` | Executes Behave BDD steps using Python and SQLAlchemy              |
+| 3        | Framework reads Snowflake connection details                 | `config/config.json`                     | Establishes connection via secure authenticator                    |
+| 4        | Validation scripts execute automatically                     | `validators/*.py`                        | SQL queries run directly inside Snowflake (no data download)       |
+| 5        | Results are written into Excel                               | `output/{table_name}.xlsx`               | Separate sheet per validation type (Duplicate, Null, Schema, etc.) |
+| 6        | Final summary report generated                               | `output/summary.xlsx`                    | Contains validation statuses for all tables                        |
+
+
+7. Example: Duplicate Validation Workflow
+
+Step 1: Enter the table name(s) into the Excel file (e.g., .PUBLIC.MY_TABLE)
+Step 2: Run the command 'behave -k features/ddl_compare.feature'
+Step 3: Framework connects to Snowflake and performs duplicate record checks
+Step 4: Excel output (output/MY_TABLE.xlsx) includes duplicate counts and query details
+Step 5: A summary Excel (output/summary.xlsx) consolidates all validation results
+
+
+| **Step** | **Description**                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------ |
+| 1️⃣      | **Input Preparation:** Tester enters the table name(s) into the Excel file (e.g., `HOSCDA.PUBLIC.MY_TABLE`). |
+| 2️⃣      | **Run Test:** Execute command:                                                                               |
+
+behave -k features/ddl_compare.feature
+``` |
+| 3️⃣ | **Execution:** Framework connects to Snowflake, reads the table schema, and executes a “duplicate record” SQL check. |
+| 4️⃣ | **Output:** An Excel file (e.g., `output/MY_TABLE.xlsx`) is created with a sheet named `duplicate_check` showing results:  
+   - Total duplicate count  
+   - Columns used for grouping  
+   - Query used  
+   - Error details (if any) |
+| 5️⃣ | **Summary Report:** A separate summary sheet (`output/summary.xlsx`) consolidates validation results for all tables. |
+
+---
+
+## **8. Excel Configuration**
+
+### **Input Excel (Example: `input_tables.xlsx`)**
+
+| **Database** | **Schema** | **Table** | **Validation Type** |
+|---------------|------------|------------|----------------------|
+| HOSCDA | PUBLIC | ABC | DUPLICATE |
+| CDA | PUBLIC | XYZ | DDL_COMPARE |
+| DG_DX | RAW | MEMBER | NULL_CHECK |
+
+---
+
+### **Configuration JSON (Example: `config.json`)**
+
+```json
+{
+  "snowflake": {
+    "user": "",
+    "account": "",
+    "authenticator": "externalbrowser",
+    "warehouse": "",
+    "database": "",
+    "role": "",
+    "schema": "",
+    "schema1": "DG_DX"
+  },
+  "table_name": "",
+  "table_name1": "",
+  "primary_keys": ["S"],
+  "data_pattern_checks": {
+    "FRST_NM": "\\d"
+  }
+}
+
+| **Column Name** | **Validation Type** | **Result**                          | **Comments**    |
+| --------------- | ------------------- | ----------------------------------- | --------------- |
+| Table           | Duplicate Check     | 0 duplicates found                  | ✅ Passed        |
+| Table           | Schema Compare      | Column mismatch: ID length 10 vs 12 | ⚠️ Needs Review |
+| Table           | Null Check          | 3 nulls in column FRST_NM           | ❌ Failed        |
 
 
 
-| Column                                        | Type                               | Why / maps to                                                               |
-| --------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------- |
-| `window_start_ts`, `window_end_ts`, `load_dt` | TIMESTAMP_NTZ, TIMESTAMP_NTZ, DATE | Daily / 24h rolling or sub-daily windows; requirement 3.1/3.2               |
-| `stage_nm`                                    | STRING                             | Slice by stage (HOSCDA_SIG/HOSCDA/HOSCDA_EXTRACT) – requirement 4           |
-| `src_nm`, `src_display_nm`                    | STRING, STRING                     | Slice by source (RA Code / RA Name) – requirement 1.2                       |
-| `doc_type_cd`, `doc_subtype_cd`               | STRING, STRING                     | Volume by doc type/subtype (e.g., ADT A01/A02/A03) – requirements 1.1 & 1.3 |
-| `prcs_nm`                                     | STRING                             | Processes (MRR, YRDC, Risk Accuracy, ADT, ChartHub, CCR) – req 3.2          |
-| `env_nm`                                      | STRING                             | Environment (PROD/QA/DEV) – ops separation                                  |
-| `lob_cd`                                      | STRING                             | Optional: line of business slicing (MA, etc.)                               |
-| `load_type`                                   | STRING                             | Optional: FULL vs INCR                                                      |
-| `file_cnt`, `record_cnt`                      | NUMBER                             | Total volume & files – requirement 1.1                                      |
-| `member_cnt`, `encounter_cnt`                 | NUMBER                             | Member/encounter volumes – requirement 1.4                                  |
-| `success_cnt`, `error_cnt`, `retry_cnt`       | NUMBER                             | Pipeline health KPIs                                                        |
-| `byte_cnt`                                    | NUMBER                             | Throughput/capacity planning                                                |
-| `first_event_ts`, `last_event_ts`             | TIMESTAMP_NTZ                      | Timeliness for the window                                                   |
-| `avg_latency_sec`, `p95_latency_sec`          | NUMBER(18,3)                       | Latency metrics for SLAs                                                    |
-| `edl_run_id`, `batch_id`                      | STRING                             | Lineage & batch traceability                                                |
-| `created_ts`                                  | TIMESTAMP_NTZ                      | Audit                                                                       |
-| `load_yyyy`, `load_mm`, `load_yyyy_mm`        | NUMBER, NUMBER, STRING             | Month rollups – requirement 2.3                                             |
+| **Technology**      | **Purpose**                       |
+| ------------------- | --------------------------------- |
+| Python              | Core automation language          |
+| Snowflake Connector | Database connectivity             |
+| SQLAlchemy          | Engine for SQL execution          |
+| Behave (BDD)        | Test scenario execution framework |
+| Pandas              | Data handling & Excel I/O         |
+| OpenPyXL            | Writing reports to Excel          |
+
+
+8. Benefits
+• Automation of repetitive SQL validation tasks
+• Excel-driven configuration for business-friendly usage
+• Centralized and auditable reporting
+• Reusable, scalable, and secure design
+• Reduces validation effort by up to 90%
+| **Alternative**                                 | **Limitation**                                   |
+| ----------------------------------------------- | ------------------------------------------------ |
+| Manual SQL queries                              | Time-consuming, prone to human error             |
+| Commercial tools (IcedQ, QuerySurge, Tricentis) | Costly and less flexible                         |
+| Custom one-off scripts                          | Lack standardization and reporting               |
+| Our Framework                                   | Open-source, consistent, scalable, and auditable |
+
+
+| **Planned Feature**   | **Description**                                                           |
+| --------------------- | ------------------------------------------------------------------------- |
+| CI/CD Integration     | Run tests automatically during deployment (e.g., Jenkins, GitHub Actions) |
+| Email Notifications   | Email test summary with Excel attachments                                 |
+| Dashboard Integration | Real-time web-based visualization of validation metrics                   |
+| Multi-Cloud Support   | Extend framework to AWS Athena, BigQuery, and Redshift                    |
+| Auto Healing          | Automatically fix known schema mismatches (optional feature)              |
+
+
+
+9. Summary
+This framework automates and standardizes Snowflake data validations — transforming manual, repetitive checks into a reliable, Excel-driven, and auditable testing process. 
+It empowers data teams to validate large data sets quickly, accurately, and consistently.
+
