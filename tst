@@ -1,4 +1,3 @@
-
 import json
 import os
 from datetime import datetime, timedelta, date
@@ -38,16 +37,37 @@ def load_config(default_path: str = "dashboard_config.json") -> Dict[str, Any]:
 # =============================================================
 
 def get_conn():
-    """Create a Snowflake connection using Streamlit secrets."""
+    """Create a Snowflake connection using Streamlit secrets.
+    Supports password auth *or* SSO via authenticator=externalbrowser (or oauth).
+    """
     creds = st.secrets.get("snowflake", None)
     if not creds:
         st.error("Missing Snowflake credentials in .streamlit/secrets.toml under [snowflake]")
         st.stop()
-    return sf.connect(
+
+    # Common required fields
+    base_kwargs = dict(
         account=creds["account"],
         user=creds["user"],
-        password=creds["password"],
         role=creds.get("role"),
+        warehouse=creds.get("warehouse"),
+        database=creds.get("database"),
+        schema=creds.get("schema"),
+        client_session_keep_alive=True,
+    )
+
+    # Choose auth method
+    if "authenticator" in creds and creds["authenticator"]:
+        # SSO/Browser/OAuth flow (no password needed)
+        base_kwargs["authenticator"] = creds["authenticator"]
+    else:
+        # Password auth
+        if not creds.get("password"):
+            st.error("No password found in secrets and no authenticator set. Provide one of them.")
+            st.stop()
+        base_kwargs["password"] = creds["password"]
+
+    return sf.connect(**base_kwargs),
         warehouse=creds.get("warehouse"),
         database=creds.get("database"),
         schema=creds.get("schema"),
@@ -453,285 +473,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-# Create the JSON dashboard config and a secrets template for local use.
-import json, textwrap, os, pathlib
-
-config = {
-  "app": {"title": "Data Pipeline Health", "logo_url": "https://dummyimage.com/120x40/ffffff/000000&text=LOGO"},
-  "theme": {
-    "primary": "#FBC02D",   # Yellow
-    "secondary": "#C62828", # Red
-    "background": "#FFFDF5",
-    "text": "#1F2937",
-    "kpi_good": "#2E7D32",
-    "kpi_warn": "#F9A825",
-    "kpi_bad": "#C62828",
-    "font_family": "Inter, Arial, sans-serif"
-  },
-  "filters": [
-    {
-      "id": "date_range",
-      "label": "Load Window",
-      "type": "date_range",
-      "bound_column": "EDL_LOAD_DTM",
-      "dataset_id": "audit",
-      "operator": "between",
-      "default": { "days_back": 7 }
-    },
-    {
-      "id": "tbl",
-      "label": "Table",
-      "type": "multiselect",
-      "bound_column": "TBL_NM",
-      "dataset_id": "audit",
-      "allowed_values_source": "select distinct TBL_NM from P01_HOSCDA.HOSCDA.HLTH_OS_VLDTN_CNTRL_AUDT"
-    },
-    {
-      "id": "lob",
-      "label": "LOB",
-      "type": "multiselect",
-      "bound_column": "EDL_LOB_CD",
-      "dataset_id": "audit",
-      "allowed_values_source": "select distinct EDL_LOB_CD from P01_HOSCDA.HOSCDA.HLTH_OS_VLDTN_CNTRL_AUDT"
-    },
-    {
-      "id": "run",
-      "label": "Run ID",
-      "type": "search",
-      "bound_column": "EDL_RUN_ID",
-      "dataset_id": "audit"
-    }
-  ],
-  "datasets": [
-    {
-      "id": "audit",
-      "label": "Audit Rows",
-      "snowflake_view": "P01_HOSCDA.HOSCDA.HLTH_OS_VLDTN_CNTRL_AUDT",
-      "time_column": "EDL_LOAD_DTM",
-      "dimension_columns": ["TBL_NM","EDL_LOB_CD","EDL_SCRTY_LVL_CD","EDL_EXTRNL_LOAD_CD","EDL_RUN_ID"],
-      "measure_columns": ["STG_RCRD_CNT","LTST_VRSN_STG_RCRD_CNT","LTST_VRSN_RAWZ_RCRD_CNT","RAWZ_RCRD_MAX_CNT","TRGT_RCRD_CNT","LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT","LTST_VRSN_RAWZ_TRGT_RCRD_DFRNC_CNT","EDL_INCRMNTL_LOAD_DTM"]
-    }
-  ],
-  "metrics": [
-    {"id": "Freshness_Minutes","label": "Freshness (min)","dataset_id": "audit","level": "row","formula": "TIMESTAMPDIFF('minute', EDL_INCRMNTL_LOAD_DTM, CURRENT_TIMESTAMP())","good": "<60","warn": ">=60 and <=180","bad": ">180","format": "number"},
-    {"id": "Load_Success_Rate","label": "Load Success Rate","dataset_id": "audit","level": "row","formula": "TRGT_RCRD_CNT / NULLIF(STG_RCRD_CNT, 0)","good": ">=0.98","warn": ">=0.95 and <0.98","bad": "<0.95","format": "pct2"},
-    {"id": "Raw_to_Stg_Ratio","label": "Raw→Stg Ratio","dataset_id": "audit","level": "row","formula": "LTST_VRSN_STG_RCRD_CNT / NULLIF(LTST_VRSN_RAWZ_RCRD_CNT, 0)","good": "between 0.98 and 1.02","warn": "between 0.95 and 0.98 or between 1.02 and 1.05","bad": "<0.95 or >1.05","format": "ratio2"},
-    {"id": "Stg_vs_Trgt_Diff","label": "Stg vs Trgt Diff","dataset_id": "audit","level": "row","formula": "LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT","good": "=0","warn": ">0 and <=100","bad": ">100","format": "number"},
-    {"id": "Raw_vs_Trgt_Diff","label": "Raw vs Trgt Diff","dataset_id": "audit","level": "row","formula": "LTST_VRSN_RAWZ_TRGT_RCRD_DFRNC_CNT","good": "=0","warn": ">0 and <=100","bad": ">100","format": "number"}
-  ],
-  "widgets": [
-    {"id": "kpi_fresh","type": "kpi","title": "Freshness (min)","dataset_id": "audit","metric_ids": ["Freshness_Minutes"],"filter_scope": ["date_range","tbl","lob","run"]},
-    {"id": "kpi_success","type": "kpi","title": "Load Success Rate","dataset_id": "audit","metric_ids": ["Load_Success_Rate"],"filter_scope": ["date_range","tbl","lob","run"]},
-    {"id": "kpi_diff_stg_trgt","type": "kpi","title": "Stg↔Trgt Diff","dataset_id": "audit","metric_ids": ["Stg_vs_Trgt_Diff"],"filter_scope": ["date_range","tbl","lob","run"]},
-    {"id": "kpi_tables_with_issues","type": "cards_list","title": "Tables with Issues","dataset_id": "audit","dims": ["TBL_NM"],"measures": ["LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT","LTST_VRSN_RAWZ_TRGT_RCRD_DFRNC_CNT"],"sort": "-LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT","limit": 20,"filter_scope": ["date_range","lob","run"]},
-    {"id": "trend_target","type": "line","title": "Target Volume by Day","dataset_id": "audit","dims": ["EDL_LOAD_DTM"],"measures": ["TRGT_RCRD_CNT"],"time_grain": "day","filter_scope": ["date_range","tbl","lob"]},
-    {"id": "table_detail","type": "table","title": "Audit Detail","dataset_id": "audit","dims": ["EDL_LOAD_DTM","TBL_NM","EDL_LOB_CD","EDL_RUN_ID"],"measures": ["STG_RCRD_CNT","TRGT_RCRD_CNT","LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT","Freshness_Minutes"],"sort": "-EDL_LOAD_DTM","limit": 200,"filter_scope": ["date_range","tbl","lob","run"]}
-  ],
-  "pages": [
-    {"id": "overview","title": "Overview","widget_ids": ["kpi_fresh","kpi_success","kpi_diff_stg_trgt","kpi_tables_with_issues","trend_target"]},
-    {"id": "details","title": "Details","widget_ids": ["table_detail"]}
-  ],
-  "defaults": {
-    "example_tbl_values": ["RA","ENC","MBR"]
-  }
-}
-
-out_dir = "/mnt/data"
-config_path = os.path.join(out_dir, "dashboard_config.json")
-with open(config_path, "w") as f:
-    json.dump(config, f, indent=2)
-
-secrets = textwrap.dedent("""\
-# Save as .streamlit/secrets.toml (create the folder if needed)
-[snowflake]
-account = "xy12345.us-east-1"
-user = "DASH_READ_SVC"
-password = "REDACTED"
-role = "DASH_READ_ROLE"
-warehouse = "DASH_WH"
-database = "P01_HOSCDA"
-schema = "HOSCDA"
-""")
-
-secrets_path = os.path.join(out_dir, "secrets_template.toml")
-with open(secrets_path, "w") as f:
-    f.write(secrets)
-
-config_path, secrets_path
-
-
-
-
-
-
-
-{
-  "app": {
-    "title": "Data Pipeline Health",
-    "logo_url": "https://example.com/logo.png"
-  },
-  "theme": {
-    "primary": "#1565C0",
-    "secondary": "#26A69A",
-    "background": "#F7F9FC",
-    "text": "#1F2937",
-    "kpi_good": "#2E7D32",
-    "kpi_warn": "#F9A825",
-    "kpi_bad": "#C62828",
-    "font_family": "Inter, Arial, sans-serif"
-  },
-  "filters": [
-    {
-      "id": "date_range",
-      "label": "Load Window",
-      "type": "date_range",
-      "bound_column": "EDL_LOAD_DTM",
-      "dataset_id": "audit",
-      "operator": "between",
-      "default": { "days_back": 7 }
-    },
-    {
-      "id": "tbl",
-      "label": "Table",
-      "type": "multiselect",
-      "bound_column": "TBL_NM",
-      "dataset_id": "audit",
-      "allowed_values_source": "select distinct TBL_NM from P01_HOSCDA.HOSCDA.HLTH_OS_VLDTN_CNTRL_AUDT"
-    },
-    {
-      "id": "lob",
-      "label": "LOB",
-      "type": "multiselect",
-      "bound_column": "EDL_LOB_CD",
-      "dataset_id": "audit",
-      "allowed_values_source": "select distinct EDL_LOB_CD from P01_HOSCDA.HOSCDA.HLTH_OS_VLDTN_CNTRL_AUDT"
-    },
-    {
-      "id": "run",
-      "label": "Run ID",
-      "type": "search",
-      "bound_column": "EDL_RUN_ID",
-      "dataset_id": "audit"
-    }
-  ],
-  "datasets": [
-    {
-      "id": "audit",
-      "label": "Audit Rows",
-      "snowflake_view": "P01_HOSCDA.HOSCDA.HLTH_OS_VLDTN_CNTRL_AUDT",
-      "time_column": "EDL_LOAD_DTM",
-      "dimension_columns": ["TBL_NM","EDL_LOB_CD","EDL_SCRTY_LVL_CD","EDL_EXTRNL_LOAD_CD","EDL_RUN_ID"],
-      "measure_columns": ["STG_RCRD_CNT","LTST_VRSN_STG_RCRD_CNT","LTST_VRSN_RAWZ_RCRD_CNT","RAWZ_RCRD_MAX_CNT","TRGT_RCRD_CNT","LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT","LTST_VRSN_RAWZ_TRGT_RCRD_DFRNC_CNT","EDL_INCRMNTL_LOAD_DTM"]
-    }
-  ],
-  "metrics": [
-    {
-      "id": "Freshness_Minutes",
-      "label": "Freshness (min)",
-      "dataset_id": "audit",
-      "level": "row",
-      "formula": "TIMESTAMPDIFF('minute', EDL_INCRMNTL_LOAD_DTM, CURRENT_TIMESTAMP())",
-      "good": "<60",
-      "warn": ">=60 and <=180",
-      "bad": ">180",
-      "format": "number"
-    },
-    {
-      "id": "Load_Success_Rate",
-      "label": "Load Success Rate",
-      "dataset_id": "audit",
-      "level": "row",
-      "formula": "TRGT_RCRD_CNT / NULLIF(STG_RCRD_CNT, 0)",
-      "good": ">=0.98",
-      "warn": ">=0.95 and <0.98",
-      "bad": "<0.95",
-      "format": "pct2"
-    },
-    {
-      "id": "Raw_to_Stg_Ratio",
-      "label": "Raw→Stg Ratio",
-      "dataset_id": "audit",
-      "level": "row",
-      "formula": "LTST_VRSN_STG_RCRD_CNT / NULLIF(LTST_VRSN_RAWZ_RCRD_CNT, 0)",
-      "good": "between 0.98 and 1.02",
-      "warn": "between 0.95 and 0.98 or between 1.02 and 1.05",
-      "bad": "<0.95 or >1.05",
-      "format": "ratio2"
-    },
-    {
-      "id": "Stg_vs_Trgt_Diff",
-      "label": "Stg vs Trgt Diff",
-      "dataset_id": "audit",
-      "level": "row",
-      "formula": "LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT",
-      "good": "=0",
-      "warn": ">0 and <=100",
-      "bad": ">100",
-      "format": "number"
-    },
-    {
-      "id": "Raw_vs_Trgt_Diff",
-      "label": "Raw vs Trgt Diff",
-      "dataset_id": "audit",
-      "level": "row",
-      "formula": "LTST_VRSN_RAWZ_TRGT_RCRD_DFRNC_CNT",
-      "good": "=0",
-      "warn": ">0 and <=100",
-      "bad": ">100",
-      "format": "number"
-    }
-  ],
-  "widgets": [
-    { "id": "kpi_fresh", "type": "kpi", "title": "Freshness (min)", "dataset_id": "audit", "metric_ids": ["Freshness_Minutes"], "filter_scope": ["date_range","tbl","lob","run"] },
-    { "id": "kpi_success", "type": "kpi", "title": "Load Success Rate", "dataset_id": "audit", "metric_ids": ["Load_Success_Rate"], "filter_scope": ["date_range","tbl","lob","run"] },
-    { "id": "kpi_diff_stg_trgt", "type": "kpi", "title": "Stg↔Trgt Diff", "dataset_id": "audit", "metric_ids": ["Stg_vs_Trgt_Diff"], "filter_scope": ["date_range","tbl","lob","run"] },
-    { "id": "kpi_tables_with_issues", "type": "cards_list", "title": "Tables with Issues", "dataset_id": "audit", "dims": ["TBL_NM"], "measures": ["LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT","LTST_VRSN_RAWZ_TRGT_RCRD_DFRNC_CNT"], "sort": "-LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT", "limit": 20, "filter_scope": ["date_range","lob","run"] },
-    { "id": "trend_target", "type": "line", "title": "Target Volume by Day", "dataset_id": "audit", "dims": ["EDL_LOAD_DTM"], "measures": ["TRGT_RCRD_CNT"], "time_grain": "day", "filter_scope": ["date_range","tbl","lob"] },
-    { "id": "table_detail", "type": "table", "title": "Audit Detail", "dataset_id": "audit", "dims": ["EDL_LOAD_DTM","TBL_NM","EDL_LOB_CD","EDL_RUN_ID"], "measures": ["STG_RCRD_CNT","TRGT_RCRD_CNT","LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT","Freshness_Minutes"], "sort": "-EDL_LOAD_DTM", "limit": 200, "filter_scope": ["date_range","tbl","lob","run"] }
-  ],
-  "pages": [
-    { "id": "overview", "title": "Overview", "widget_ids": ["kpi_fresh","kpi_success","kpi_diff_stg_trgt","kpi_tables_with_issues","trend_target"] },
-    { "id": "details",  "title": "Details",  "widget_ids": ["table_detail"] }
-  ]
-}
-
-
-
-
-root
-├─ app: { title, logo_url }
-├─ theme: { primary, secondary, background, text, kpi_good, kpi_warn, kpi_bad, font_family }
-├─ filters: [ 
-     { id, label, type, bound_column, dataset_id, operator, default, allowed_values_source }
-  ]
-├─ datasets: [
-     { id, label, snowflake_view, time_column, dimension_columns[], measure_columns[] }
-  ]
-├─ metrics: [
-     { id, label, dataset_id, level, formula, good, warn, bad, format }
-  ]
-├─ widgets: [
-     { id, type, title, dataset_id, metric_ids[], dims[], measures[], time_grain, sort, limit, filter_scope[] }
-  ]
-├─ pages: [
-     { id, title, widget_ids[] }
-  ]
-
-
-
-# .streamlit/secrets.toml
-[snowflake]
-account = "xy12345.us-east-1"
-user = "DASH_READ_SVC"
-password = "REDACTED"
-role = "DASH_READ_ROLE"
-warehouse = "DASH_WH"
-database = "P01_HOSCDA"
-schema = "HOSCDA"
