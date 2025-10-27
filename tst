@@ -1,3 +1,73 @@
+# snowflake_conn.py
+import streamlit as st
+import snowflake.connector as sf
+
+
+def get_snowflake_connection():
+    """
+    Create and return a Snowflake connection using Streamlit secrets.
+    Supports either password or SSO (externalbrowser / oauth) authentication.
+    """
+    creds = st.secrets.get("snowflake", None)
+    if not creds:
+        st.error("Missing Snowflake credentials in .streamlit/secrets.toml under [snowflake]")
+        st.stop()
+
+    # Common connection parameters
+    base_kwargs = dict(
+        account=creds["account"],
+        user=creds["user"],
+        role=creds.get("role"),
+        warehouse=creds.get("warehouse"),
+        database=creds.get("database"),
+        schema=creds.get("schema"),
+        client_session_keep_alive=True,
+    )
+
+    # Authentication method
+    if "authenticator" in creds and creds["authenticator"]:
+        base_kwargs["authenticator"] = creds["authenticator"]
+    else:
+        if not creds.get("password"):
+            st.error("No password found and no authenticator set. Please provide one.")
+            st.stop()
+        base_kwargs["password"] = creds["password"]
+
+    # Create and return connection
+    try:
+        conn = sf.connect(**base_kwargs)
+        st.session_state["snowflake_connected"] = True
+        return conn
+    except Exception as e:
+        st.error(f"❌ Failed to connect to Snowflake: {e}")
+        raise
+
+
+def run_query(sql: str, params=None):
+    """
+    Run a query and return a pandas DataFrame.
+    """
+    import pandas as pd
+
+    if params is None:
+        params = ()
+
+    with get_snowflake_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            cols = [c[0] for c in cur.description]
+    return pd.DataFrame(rows, columns=cols)
+
+
+
+from snowflake_conn import get_snowflake_connection, run_query
+
+
+
+
+
+
 import json
 import os
 from datetime import datetime, timedelta, date
@@ -7,6 +77,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 import snowflake.connector as sf
+from snowflake_conn import get_snowflake_connection, run_query
 
 # =============================================================
 # CONFIG LOADING
@@ -33,7 +104,13 @@ def load_config(default_path: str = "dashboard_config.json") -> Dict[str, Any]:
 
 
 # =============================================================
-# SNOWFLAKE CONNECTION + QUERY
+# SNOWFLAKE QUERY (delegated to snowflake_conn.py)
+# =============================================================
+
+def run_query_df(sql: str, params: Tuple[Any, ...] = ()) -> pd.DataFrame:
+    """Wrapper to keep the rest of the app unchanged."""
+    return run_query(sql, params)
+
 # =============================================================
 
 def get_conn():
@@ -440,6 +517,19 @@ def main():
             st.image(logo, use_column_width=True)
     with header_cols[1]:
         st.title(title)
+
+    # Sidebar: connection test
+    st.sidebar.markdown("**Connection**")
+    if st.sidebar.button("Test Snowflake connection"):
+        try:
+            with st.spinner("Testing connection..."):
+                diags = run_query(
+                    "SELECT CURRENT_USER() AS USER, CURRENT_ROLE() AS ROLE, CURRENT_WAREHOUSE() AS WAREHOUSE, CURRENT_DATABASE() AS DATABASE, CURRENT_SCHEMA() AS SCHEMA"
+                )
+            st.success("✅ Connected to Snowflake")
+            st.dataframe(diags, use_container_width=True)
+        except Exception as e:
+            st.error(f"❌ Connection failed: {e}")
 
     # Filters UI
     filter_values = render_filters(cfg)
