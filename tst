@@ -445,3 +445,134 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+{
+  "app": {
+    "title": "HOSCDA Data Quality Dashboard",
+    "logo_url": ""
+  },
+  "theme": {
+    "primary": "#FBC02D",
+    "secondary": "#C62828",
+    "background": "#FFFDF5",
+    "text": "#1F2937",
+    "font_family": "Inter, Arial, sans-serif",
+    "kpi_good": "#2E7D32",
+    "kpi_warn": "#F9A825",
+    "kpi_bad": "#C62828"
+  },
+  "datasets": [
+    {
+      "id": "dq_audit",
+      "snowflake_view": "P01_HOSCDA.HOSCDA.HLTH_OS_VLDTN_CNTRL_AUDT",
+      "time_column": "EDL_INCRMNTL_LOAD_DTM",
+      "dimension_columns": [
+        "TBL_NM",
+        "EDL_LOB_CD",
+        "EDL_RUN_ID"
+      ],
+      "measure_columns": [
+        "STG_RCRD_CNT",
+        "TRGT_RCRD_CNT",
+        "LTST_VRSN_STG_RCRD_CNT",
+        "LTST_VRSN_RAWZ_RCRD_CNT",
+        "LTST_VRSN_STG_TRGT_RCRD_DFRNC_CNT",
+        "LTST_VRSN_RAWZ_TRGT_RCRD_DFRNC_CNT"
+      ]
+    }
+  ],
+  "filters": [
+    {
+      "id": "tbl_filter",
+      "label": "Table Name",
+      "type": "multiselect",
+      "dataset_id": "dq_audit",
+      "bound_column": "TBL_NM"
+    },
+    {
+      "id": "date_range",
+      "label": "Load Window",
+      "type": "date_range",
+      "dataset_id": "dq_audit",
+      "bound_column": "EDL_INCRMNTL_LOAD_DTM",
+      "default": {
+        "days_back": 7
+      }
+    },
+    {
+      "id": "lob_filter",
+      "label": "LOB",
+      "type": "multiselect",
+      "dataset_id": "dq_audit",
+      "bound_column": "EDL_LOB_CD"
+    },
+    {
+      "id": "run_search",
+      "label": "Run ID contains",
+      "type": "search",
+      "dataset_id": "dq_audit",
+      "bound_column": "EDL_RUN_ID"
+    }
+  ],
+  "widgets": [
+    {
+      "id": "kpi_summary",
+      "type": "kpi",
+      "dataset_id": "dq_audit",
+      "title": "Data Load Health KPIs",
+      "metric_ids": [
+        "FRESHNESS_MINUTES",
+        "LOAD_SUCCESS_RATE",
+        "STG_TRGT_DIFF_PCT"
+      ]
+    },
+    {
+      "id": "line_trend",
+      "type": "line",
+      "dataset_id": "dq_audit",
+      "title": "Target Volume Trend (by day)",
+      "x": "EDL_INCRMNTL_LOAD_DTM",
+      "y": "TRGT_RCRD_CNT"
+    },
+    {
+      "id": "bar_diff_pct",
+      "type": "bar",
+      "dataset_id": "dq_audit",
+      "title": "Stage\u2192Target Diff % by Table",
+      "x": "TBL_NM",
+      "y": "STG_TRGT_DIFF_PCT",
+      "is_percentage": true
+    },
+    {
+      "id": "bar_success_rate",
+      "type": "bar",
+      "dataset_id": "dq_audit",
+      "title": "Load Success Rate % by Table",
+      "x": "TBL_NM",
+      "y": "LOAD_SUCCESS_RATE",
+      "is_percentage": true
+    },
+    {
+      "id": "data_table",
+      "type": "table",
+      "dataset_id": "dq_audit",
+      "title": "Detailed Records"
+    }
+  ],
+  "pages": [
+    {
+      "id": "overview",
+      "title": "Overview",
+      "widget_ids": [
+        "kpi_summary",
+        "line_trend",
+        "bar_diff_pct",
+        "bar_success_rate",
+        "data_table"
+      ]
+    }
+  ]
+}
