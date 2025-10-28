@@ -1,135 +1,166 @@
-"""
-snowflake_conn.py
-
-Reusable connection helper for Snowflake with built-in self-test.
-
-Priority for credentials (first found wins):
-1. Env var  SNOWFLAKE_CREDENTIALS_JSON → points to a JSON file
-2. Local file ./snowflake_credentials.json
-3. Streamlit secrets [.streamlit/secrets.toml] section [snowflake]
-
-Supports:
-- Password authentication  (add "password")
-- SSO / External browser / OAuth  (add "authenticator": "externalbrowser")
-"""
-
 import json
-import os
-from typing import Any, Dict, Tuple
+from datetime import datetime, timedelta, date
+from typing import Any, Dict, List, Tuple
+
 import pandas as pd
-import snowflake.connector as sf
+import plotly.express as px
+import streamlit as st
 
-# Optional: Streamlit import for dashboard integration
-try:
-    import streamlit as st
-except ImportError:
-    st = None
+# ✅ Import from your Snowflake helper
+from snowflake_conn import get_snowflake_connection, run_query
 
 
 # =============================================================
-# LOAD CREDENTIALS
+# CONFIG LOADING
 # =============================================================
-def _load_creds() -> Dict[str, Any]:
-    """Load Snowflake credentials from JSON or Streamlit secrets."""
-    # 1) Environment variable path
-    path = os.environ.get("SNOWFLAKE_CREDENTIALS_JSON")
-    if path and os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    # 2) Local default file
-    if os.path.exists("snowflake_credentials.json"):
-        with open("snowflake_credentials.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    # 3) Streamlit secrets
-    if st is not None:
-        creds = st.secrets.get("snowflake", None)
-        if creds:
-            return dict(creds)
-
-    raise RuntimeError(
-        "❌ No Snowflake credentials found.\n"
-        "Provide one of:\n"
-        "- Env var SNOWFLAKE_CREDENTIALS_JSON pointing to a JSON file\n"
-        "- snowflake_credentials.json in this folder\n"
-        "- or .streamlit/secrets.toml [snowflake]"
-    )
+def load_config(path: str = "dashboard_config.json") -> Dict[str, Any]:
+    """Load JSON dashboard configuration."""
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 # =============================================================
-# CONNECTION CREATOR
+# THEME / STYLING
 # =============================================================
-def get_snowflake_connection():
-    """Return a live Snowflake connection."""
-    creds = _load_creds()
-
-    base_kwargs = dict(
-        account=creds["account"],
-        user=creds["user"],
-        role=creds.get("role"),
-        warehouse=creds.get("warehouse"),
-        database=creds.get("database"),
-        schema=creds.get("schema"),
-        client_session_keep_alive=True,
-    )
-
-    # Authentication
-    if "authenticator" in creds and creds["authenticator"]:
-        base_kwargs["authenticator"] = creds["authenticator"]
-    else:
-        if not creds.get("password"):
-            raise RuntimeError("No password found and no authenticator set.")
-        base_kwargs["password"] = creds["password"]
-
-    return sf.connect(**base_kwargs)
+def apply_theme(theme: Dict[str, Any]):
+    css = f"""
+    <style>
+      :root {{
+        --primary: {theme.get('primary', '#1565C0')};
+        --secondary: {theme.get('secondary', '#26A69A')};
+        --bg: {theme.get('background', '#FFFFFF')};
+        --text: {theme.get('text', '#1F2937')};
+      }}
+      .stApp {{ background: var(--bg); color: var(--text); }}
+      .metric-good {{ border-left: 6px solid {theme.get('kpi_good', '#2E7D32')}; padding-left: 8px; }}
+      .metric-warn {{ border-left: 6px solid {theme.get('kpi_warn', '#F9A825')}; padding-left: 8px; }}
+      .metric-bad  {{ border-left: 6px solid {theme.get('kpi_bad', '#C62828')}; padding-left: 8px; }}
+      .kpi-card {{ background: white; border-radius: 12px; padding: 12px 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
 
 
 # =============================================================
-# QUERY RUNNER
+# FILTER HELPERS
 # =============================================================
-def run_query(sql: str, params: Tuple[Any, ...] | None = None) -> pd.DataFrame:
-    """Run SQL and return pandas DataFrame."""
-    if params is None:
-        params = ()
-    with get_snowflake_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-            cols = [c[0] for c in cur.description]
-    return pd.DataFrame(rows, columns=cols)
+def default_date_range(days_back: int = 7):
+    end = datetime.utcnow().date()
+    start = end - timedelta(days=days_back)
+    return start, end
+
+
+def render_filters(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Render filters dynamically from JSON config."""
+    st.sidebar.header("Filters")
+    filters = {}
+    for f in cfg.get("filters", []):
+        f_id = f["id"]
+        f_type = f.get("type", "text")
+        label = f.get("label", f_id)
+
+        if f_type == "date_range":
+            start, end = default_date_range(f.get("default", {}).get("days_back", 7))
+            sel = st.sidebar.date_input(label, (start, end))
+            filters[f_id] = {"start": sel[0], "end": sel[1]}
+        elif f_type == "multiselect":
+            df_vals = run_query(
+                f"SELECT DISTINCT {f['bound_column']} AS v FROM {cfg['datasets'][0]['snowflake_view']} WHERE {f['bound_column']} IS NOT NULL ORDER BY 1"
+            )
+            opts = df_vals["v"].tolist() if not df_vals.empty else []
+            filters[f_id] = st.sidebar.multiselect(label, opts)
+        elif f_type == "search":
+            filters[f_id] = st.sidebar.text_input(label, "")
+        else:
+            filters[f_id] = st.sidebar.text_input(label, "")
+    return filters
 
 
 # =============================================================
-# SELF-TEST (Run this file directly)
+# DATA FETCH
 # =============================================================
+def fetch_data(cfg: Dict[str, Any], filters: Dict[str, Any]) -> pd.DataFrame:
+    dataset = cfg["datasets"][0]  # Single dataset for now
+    view = dataset["snowflake_view"]
+
+    where_clauses = []
+    params = []
+
+    for fid, val in filters.items():
+        if isinstance(val, dict) and "start" in val:
+            where_clauses.append(f"{dataset['time_column']} BETWEEN %s AND %s")
+            params += [val["start"], val["end"]]
+        elif isinstance(val, list) and val:
+            placeholders = ",".join(["%s"] * len(val))
+            where_clauses.append(f"{fid.upper()} IN ({placeholders})")
+            params += val
+        elif isinstance(val, str) and val.strip():
+            where_clauses.append(f"{fid.upper()} ILIKE %s")
+            params.append(f"%{val}%")
+
+    where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    sql = f"SELECT * FROM {view}{where_sql} LIMIT 20000"
+
+    df = run_query(sql, tuple(params))
+    return df
+
+
+# =============================================================
+# KPI LOGIC
+# =============================================================
+def show_kpis(df: pd.DataFrame):
+    st.subheader("Key Metrics")
+    if df.empty:
+        st.warning("No data found for filters.")
+        return
+
+    freshness = (datetime.utcnow() - pd.to_datetime(df["EDL_INCRMNTL_LOAD_DTM"]).max()).seconds / 60
+    total_trgt = df["TRGT_RCRD_CNT"].sum()
+    total_stg = df["STG_RCRD_CNT"].sum()
+    success_rate = total_trgt / total_stg if total_stg else 0
+
+    cols = st.columns(3)
+    cols[0].metric("Freshness (minutes)", f"{freshness:.0f}")
+    cols[1].metric("Load Success Rate", f"{success_rate*100:.2f}%")
+    cols[2].metric("Total Target Records", f"{total_trgt:,}")
+
+
+# =============================================================
+# MAIN APP
+# =============================================================
+def main():
+    cfg = load_config()
+    st.set_page_config(page_title=cfg["app"]["title"], layout="wide")
+    apply_theme(cfg["theme"])
+
+    st.title(cfg["app"]["title"])
+
+    # ---- Connection Test Button ----
+    st.sidebar.markdown("**Connection**")
+    if st.sidebar.button("Test Snowflake connection"):
+        try:
+            df_test = run_query(
+                "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_DATABASE(), CURRENT_SCHEMA()"
+            )
+            st.success("✅ Connection successful!")
+            st.dataframe(df_test)
+        except Exception as e:
+            st.error(f"❌ Connection failed: {e}")
+
+    # ---- Filters ----
+    filters = render_filters(cfg)
+
+    # ---- Data ----
+    with st.spinner("Loading data..."):
+        df = fetch_data(cfg, filters)
+
+    # ---- KPIs ----
+    show_kpis(df)
+
+    # ---- Table ----
+    st.subheader("Detailed Records")
+    st.dataframe(df, use_container_width=True)
+
+
 if __name__ == "__main__":
-    print("🔍 Testing Snowflake connection ...")
-
-    try:
-        conn = get_snowflake_connection()
-        cur = conn.cursor()
-
-        # Show current context
-        cur.execute(
-            "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_DATABASE(), CURRENT_SCHEMA()"
-        )
-        print("✅ Connection successful:")
-        for row in cur.fetchall():
-            print("  USER:", row[0], "ROLE:", row[1], "WAREHOUSE:", row[2], "DB:", row[3], "SCHEMA:", row[4])
-
-        # 🔹 Change this line to your table name
-        table_name = "P01_HOSCDA.HOSCDA.HLTH_OS_VLDTN_CNTRL_AUDT"
-
-        # Run a simple test query
-        sql = f"SELECT COUNT(*) AS ROW_COUNT FROM {table_name}"
-        cur.execute(sql)
-        count = cur.fetchone()[0]
-        print(f"📊 Row count in {table_name}: {count}")
-
-        cur.close()
-        conn.close()
-        print("✅ Test completed successfully.")
-
-    except Exception as e:
-        print(f"❌ Connection or query failed: {e}")
+    main()
