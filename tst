@@ -399,7 +399,6 @@ def render_line_trend(df: pd.DataFrame, time_col: str, measure: str, title: str)
         margin=dict(l=30, r=30, t=30, b=30),
     )
 
-    # Highlight peak point
     max_idx = grp[measure].idxmax()
     if not pd.isna(max_idx):
         max_row = grp.loc[max_idx]
@@ -428,6 +427,44 @@ def render_line_trend(df: pd.DataFrame, time_col: str, measure: str, title: str)
 
 def render_bar_by_table(df: pd.DataFrame, table_col: str, measure_col: str, title: str, pct: bool = False):
     if df.empty or table_col not in df.columns or measure_col not in df.columns:
+        st.warning(f"No data for {title}")
+        return
+
+    g = df.groupby(table_col, as_index=False)[measure_col].mean()
+    g = g.sort_values(measure_col, ascending=False)
+
+    st.subheader(title)
+
+    fig = px.bar(
+        g,
+        x=table_col,
+        y=measure_col,
+        text=measure_col,
+        labels={table_col: "Table", measure_col: measure_col.replace("_", " ").title()},
+    )
+
+    if pct:
+        fig.update_traces(
+            texttemplate="%{y:.2%}",
+            hovertemplate="%{x}<br>%{y:.2%}",
+            textposition="outside"
+        )
+    else:
+        fig.update_traces(
+            hovertemplate="%{x}<br>%{y:,.0f}",
+            texttemplate="%{y:,.0f}",
+            textposition="outside"
+        )
+
+    fig.update_layout(
+        xaxis_title="Table",
+        yaxis_title=measure_col.replace("_", " ").title(),
+        margin=dict(l=30, r=30, t=30, b=30),
+        yaxis=dict(showgrid=True),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
         st.warning(f"No data for {title}")
         return
     g = df.groupby(table_col, as_index=False)[measure_col].mean()  # % metrics -> mean per table
